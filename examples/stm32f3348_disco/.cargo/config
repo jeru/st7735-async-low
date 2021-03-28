@@ -1,0 +1,10 @@
+[build]
+target = "thumbv7em-none-eabihf"  # STM32F334C8 is Cortex-M4F.
+
+[target.'cfg(all(target_arch = "arm", target_os = "none"))']
+runner = "arm-none-eabi-gdb -q -x openocd.gdb"
+rustflags = [
+  "-C", "linker=arm-none-eabi-gcc",
+  "-C", "link-arg=-Wl,-Tlink.x",
+  "-C", "link-arg=-nostartfiles",
+]
