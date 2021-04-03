@@ -70,21 +70,30 @@ impl st7735_async_low::spi::DcxPin for Spi {
     fn set_dcx_data_mode(&mut self) { self.dcx.set_high().unwrap(); }
 }
 
-#[async_trait_static::ritit]
-impl st7735_async_low::spi::WriteU8 for Spi {
-    fn write_u8(&mut self, data: u8) -> impl Future<Output=()> {
+impl<'a> st7735_async_low::spi::WriteU8<'a> for Spi {
+    type WriteU8Done = ByteWriting<'a>;
+
+    fn write_u8(&'a mut self, data: u8) -> Self::WriteU8Done {
         self.write_byte(data)
     }
 }
 
-impl st7735_async_low::spi::ReadModeSetter for Spi {
-    fn start_reading(&mut self) {
+impl<'a> st7735_async_low::spi::Read<'a> for Spi {
+    type ReadBitsType = BitsReader<'a>;
+
+    fn start_reading(&'a mut self) -> Self::ReadBitsType {
         unsafe {
             disable_spi1();
             set_pins_bitbang();
         }
+        BitsReader{spi: self}
     }
-    fn finish_reading(&mut self) {
+}
+
+pub struct BitsReader<'r> { spi: &'r mut Spi }
+
+impl<'r> Drop for BitsReader<'r> {
+    fn drop(&mut self) {
         unsafe {
             set_pins_spi1();
             enable_spi1();
@@ -92,13 +101,22 @@ impl st7735_async_low::spi::ReadModeSetter for Spi {
     }
 }
 
-#[async_trait_static::ritit]
-impl st7735_async_low::spi::Read for Spi {
-    fn read(&mut self, num_bits: usize) -> impl Future<Output=u32> {
-        async move {
+impl<'a, 'r> st7735_async_low::spi::ReadBits<'a> for BitsReader<'r> {
+    type ReadBitsDone = BitsReaderResult<'a>;
+
+    fn read_bits(&'a mut self, num_bits: usize) -> Self::ReadBitsDone {
+        BitsReaderResult{_spi: &mut self.spi, num_bits}
+    }
+}
+
+pub struct BitsReaderResult<'a> { _spi: &'a mut Spi, num_bits: usize }
+
+impl<'a> Future for BitsReaderResult<'a> {
+    type Output = u32;
+    fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<u32> {
             let mut r: u32 = 0;
             let regs = unsafe{ pa_regs() };
-            for _ in 0..num_bits {
+            for _ in 0..self.num_bits {
                 regs.bsrr.write(|w| w.br5().reset());
                 delay();
                 let bit = if regs.idr.read().idr7().bits() {1} else {0};
@@ -106,8 +124,7 @@ impl st7735_async_low::spi::Read for Spi {
                 delay();
                 r = r.wrapping_shl(1) | bit;
             }
-            r
-        }
+            Poll::Ready(r)
     }
 }
 

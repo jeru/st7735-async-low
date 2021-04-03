@@ -29,124 +29,18 @@ pub trait DcxPin {
 /// Common MCUs' SPI peripheral can be used, with
 /// CPOL=1, CPHA=1 and MSB-first. Notice the timing requirement from ST7735's
 /// datasheet.
-///
-/// # Examples
-///
-/// ```
-/// # #![allow(incomplete_features)]
-/// #![feature(generic_associated_types)]
-/// #![feature(min_type_alias_impl_trait)]
-/// # use st7735_async_low::spi::*;
-/// extern crate async_trait_static;
-/// use core::future::Future;
-///
-/// struct MySpi { /*...*/ }
-///
-/// #[async_trait_static::ritit]
-/// impl WriteU8 for MySpi {
-///     fn write_u8(&mut self, data: u8) -> impl Future<Output=()> {
-///         # let _ = data;
-///         async move { /*...*/ }
-///     }
-/// }
-/// ```
-#[async_trait_static::ritit]
-pub trait WriteU8 {
-    fn write_u8(&mut self, data: u8) -> impl Future<Output=()>;
+pub trait WriteU8<'a> {
+    type WriteU8Done : 'a + Future<Output=()>;
+
+    fn write_u8(&'a mut self, data: u8) -> Self::WriteU8Done;
 }
 
 /// Defines how a sequence of `u8` or `u16` is written with the `SCK` and `SDA`
 /// pins.
-///
-/// It is assumed that the struct to implement this trait has already
-/// implemented [WriteU8].
-///
-/// # Examples
-/// Option 1: Directly implement.
-///
-/// ```
-/// # #![allow(incomplete_features)]
-/// # #![feature(generic_associated_types)]
-/// # #![feature(min_type_alias_impl_trait)]
-/// # use st7735_async_low::spi::*;
-/// # extern crate async_trait_static;
-/// # use core::future::Future;
-/// #
-/// # struct MySpi { /*...*/ }
-/// #
-/// # #[async_trait_static::ritit]
-/// # impl WriteU8 for MySpi {
-/// #     fn write_u8(&mut self, data: u8) -> impl Future<Output=()> {
-/// #         let _ = data;
-/// #         async move { /*...*/ }
-/// #     }
-/// # }
-/// // Following the example of `WriteU8`.
-/// #[async_trait_static::ritit]
-/// impl WriteBatch for MySpi {
-///     fn write_u8_iter<I: Iterator<Item=u8>>(&mut self, iter: I)
-///             -> impl Future<Output=()> {
-///         async move { /*...*/ }
-///     }
-///     fn write_u16_iter<I: Iterator<Item=u16>>(&mut self, iter: I)
-///             -> impl Future<Output=()> {
-///         async move { /*...*/ }
-///     }
-/// }
-/// // Then use `MySpi` as `impl WriteBatch` somehow.
-/// ```
-///
-/// Option 2: Use [crate::adapters::AdapterU8].
-///
-/// # Performance Considerations
-///
-/// When the run-time performance is not critical, the user can choose to
-/// only implement [WriteU8], then use [AdapterU8](crate::AdapterU8) to
-/// get a default implementation of [WriteBatch]. But notice the inefficiency
-/// of such default implementation: it only start trying to send the the next
-/// byte until the previous byte is finished.
-///
-/// In many MCUs with SPI peripherals, better performance (both lower latency
-/// and lower CPU usage) can be achieved via more careful timing.
-/// Eg., in some STM32 MCUs, the next byte can be written to the buffer register
-/// as soon as the hardware starts sending the previous byte -- remarkly, no
-/// need to wait for the previous byte to fully finish.
-/// DMA is also a good option when sending more bytes in a batch.
-/// These benefits can be adapted via alternative implementations of
-/// `WriteBatch`.
-#[async_trait_static::ritit]
-pub trait WriteBatch : WriteU8 {
-    fn write_u8_iter<I: Iterator<Item=u8>>(&mut self, iter: I)
-        -> impl Future<Output=()>;
-    fn write_u16_iter<I: Iterator<Item=u16>>(&mut self, iter: I)
-        -> impl Future<Output=()>;
-}
+pub trait WriteU8s<'a> {
+    type WriteU8sDone : 'a + Future<Output=()>;
 
-/// Convenient function with broader input types.
-#[inline(always)]
-pub fn write_u8s<'a, S, I: 'a>(spi: &'a mut S, items: I)
-    -> impl Future<Output=()> + 'a
-where S: WriteBatch,
-      I: IntoIterator<Item=&'a u8> {
-    spi.write_u8_iter(items.into_iter().copied())
-}
-
-/// Convenient function with broader input types.
-#[inline(always)]
-pub fn write_u16s<'a, S, I: 'a>(spi: &'a mut S, items: I)
-    -> impl Future<Output=()> + 'a
-where S: WriteBatch,
-      I: IntoIterator<Item=&'a u16> {
-    spi.write_u16_iter(items.into_iter().copied())
-}
-
-// TODO: shouldn't need to separate this from `ReadU8` after
-// async_trait_static supports mixed setup.
-/// Defines how the MCU should switch the SPI between the reading and writing
-/// modes.
-pub trait ReadModeSetter {
-    fn start_reading(&mut self);
-    fn finish_reading(&mut self);
+    fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone;
 }
 
 /// Defines how the MCU should use the `SCK` and `SDA` pins to read data.
@@ -157,82 +51,103 @@ pub trait ReadModeSetter {
 /// So the user can choose to simply **not** implement it. The write commands
 /// of [Commands](crate::Commands) will still work in that case.
 ///
-/// # Example
-///
-/// ```
-/// # #![allow(incomplete_features)]
-/// #![feature(generic_associated_types)]
-/// #![feature(min_type_alias_impl_trait)]
-/// # use st7735_async_low::spi::*;
-/// extern crate async_trait_static;
-/// use core::future::Future;
-///
-/// struct MySpi { /*...*/ }
-/// # impl ReadModeSetter for MySpi {
-/// #     fn start_reading(&mut self) {}
-/// #     fn finish_reading(&mut self) {}
-/// # }
-///
-/// #[async_trait_static::ritit]
-/// impl Read for MySpi {
-///     fn read(&mut self, num_bits: usize) -> impl Future<Output=u32> {
-///         async move {
-///             let mut r = 0u32;
-///             for _ in 0..num_bits {
-///                 let bit = /*...read a bit...*/
-///                 # 0u32;
-///                 r = r.wrapping_shl(1) | bit;
-///             }
-///             r
-///         }
-///     }
-/// }
-/// ```
-#[async_trait_static::ritit]
-pub trait Read : ReadModeSetter {
-    /// Supposed to bit-bang so many bits.
-    fn read(&mut self, num_bits: usize) -> impl Future<Output=u32>;
+/// Calling `start_reading()` should switch the device into reading mode,
+/// which should be switched back into writing mode when the returned object
+/// of `start_reading()` is dropped.
+pub trait Read<'a> {
+    type ReadBitsType : 'a + for<'b> ReadBits<'b>;
+
+    fn start_reading(&'a mut self) -> Self::ReadBitsType;
+}
+
+/// Defines how the helper RAII variable returned by [Read::start_reading()]
+/// should behave.
+pub trait ReadBits<'a> {
+    type ReadBitsDone : 'a + Future<Output=u32>;
+
+    fn read_bits(&'a mut self, num_bits: usize) -> Self::ReadBitsDone;
 }
 
 #[cfg(test)]
 mod test {
+    use core::marker::PhantomData;
+    use core::pin::Pin;
+    use core::task::{Context, Poll};
     use super::*;
 
-    struct Dummy1;
-    #[async_trait_static::async_trait]
-    impl WriteU8 for Dummy1 {
-        async fn write_u8(&mut self, _data: u8) {}
+    struct FutureDummy1<'a, T, R = ()> {
+        _t: &'a T,
+        _r: PhantomData<R>,
+    }
+    impl<'a, T, R> FutureDummy1<'a, T, R> {
+        pub fn new(t: &'a T) -> Self { Self{_t: t, _r: Default::default()} }
+    }
+    impl<'a, T, R: Default> Future for FutureDummy1<'a, T, R> {
+        type Output = R;
+
+        fn poll(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<R> {
+            Poll::Ready(Default::default())
+        }
     }
 
-    #[async_trait_static::ritit]
-    impl WriteBatch for Dummy1 {
-        fn write_u8_iter<I: Iterator<Item=u8>>(&mut self, iter: I)
-                -> impl Future<Output=()> {
-            async move {
-                let mut _sum: u8 = 0;
-                for v in iter { _sum += v; }
-            }
+    #[derive(Default)]
+    struct Dummy1 { u: usize, i: isize }
+
+    impl<'a> WriteU8<'a> for Dummy1 {
+        type WriteU8Done = FutureDummy1<'a, usize>;
+
+        fn write_u8(&'a mut self, _data: u8) -> Self::WriteU8Done {
+            FutureDummy1::new(&self.u)
         }
-        fn write_u16_iter<I: Iterator<Item=u16>>(&mut self, iter: I)
-                -> impl Future<Output=()> {
-            async move {
-                let mut _sum: u16 = 0;
-                for v in iter { _sum += v; }
-            }
+    }
+
+    impl<'a> WriteU8s<'a> for Dummy1 {
+        type WriteU8sDone = FutureDummy1<'a, isize>;
+
+        fn write_u8s(&'a mut self, _data: &'a [u8]) -> Self::WriteU8sDone {
+            FutureDummy1::new(&self.i)
         }
     }
 
     #[test]
-    fn write_u8_iter_with_slice() {
-        let mut dummy = Dummy1{};
+    fn write_u8() {
+        let mut dummy: Dummy1 = Default::default();
+        let _ = async { dummy.write_u8(10).await; };
+    }
+
+    #[test]
+    fn write_u8_slice() {
+        let mut dummy: Dummy1 = Default::default();
         let items: [u8; 3] = [0, 1, 2];
-        let _ = async { write_u8s(&mut dummy, &items).await; };
+        let _ = async { dummy.write_u8s(&items).await; };
+    }
+
+    #[derive(Default)]
+    struct Dummy2 { i: i64 }
+    struct Dummy2Reader<'a> { d: &'a mut Dummy2 }
+
+    impl<'a> Read<'a> for Dummy2 {
+        type ReadBitsType = Dummy2Reader<'a>;
+
+        fn start_reading(&'a mut self) -> Self::ReadBitsType {
+            Dummy2Reader{d: self}
+        }
+    }
+
+    impl<'a, 'b> ReadBits<'b> for Dummy2Reader<'a> {
+        type ReadBitsDone = FutureDummy1<'b, i64, u32>;
+
+        fn read_bits(&'b mut self, _num_bits: usize) -> Self::ReadBitsDone {
+            FutureDummy1::new(&self.d.i)
+        }
     }
 
     #[test]
-    fn write_u16_iter_with_slice() {
-        let mut dummy = Dummy1{};
-        let items: [u16; 3] = [0, 1, 2];
-        let _ = async { write_u16s(&mut dummy, &items).await; };
+    fn read_bits() {
+        let mut dummy: Dummy2 = Default::default();
+        let _ = async {
+            let mut r = dummy.start_reading();
+            r.read_bits(12).await
+        };
     }
 }

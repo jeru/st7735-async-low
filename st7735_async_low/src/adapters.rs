@@ -13,218 +13,294 @@
 // limitations under the License.
 
 use core::future::Future;
+use core::pin::Pin;
+use core::task::{Context, Poll};
 
 use crate::spi;
-use spi::{WriteBatch, WriteU8};
+use spi::{DcxPin, Read, WriteU8, WriteU8s};
 
-/// A helper to add [WriteBatch] support when [WriteU8] is implemented.
+/// A helper to add [WriteU8s] support when [WriteU8] is implemented.
 ///
 /// Supposedly **not** very efficient. See the Performance Consideration section
-/// of [WriteBatch].
-///
-/// Note that `AdapterU8<st7735_low::testing_device::MockDevice>` provides
-/// a mock-based testing utility but is under #[cfg(test)] so isn't rendered
-/// on the doc. And `AdapterU8<st7735_low::testing_device::FakeDevice>`
-/// simply records the received bytes.
+/// of the module [spi].
 pub struct AdapterU8<W> { w: W }
 
 impl<W> AdapterU8<W> {
     pub fn new(w: W) -> Self { Self{w} }
 }
 
-impl<W: spi::DcxPin> spi::DcxPin for AdapterU8<W> {
+impl<W: DcxPin> DcxPin for AdapterU8<W> {
     fn set_dcx_command_mode(&mut self) { self.w.set_dcx_command_mode(); }
     fn set_dcx_data_mode(&mut self) { self.w.set_dcx_data_mode(); }
 }
 
-#[async_trait_static::ritit]
-impl<W: spi::Read> spi::Read for AdapterU8<W> {
-    #[inline(always)]
-    fn read(&mut self, num_bits: usize) -> impl Future<Output=u32> {
-        self.w.read(num_bits)
+impl<'a, W: Read<'a>> Read<'a> for AdapterU8<W> {
+    type ReadBitsType = <W as Read<'a>>::ReadBitsType;
+
+    fn start_reading(&'a mut self) -> Self::ReadBitsType {
+        self.w.start_reading()
     }
 }
 
-impl<W: spi::ReadModeSetter> spi::ReadModeSetter for AdapterU8<W> {
-    fn start_reading(&mut self) { self.w.start_reading(); }
-    fn finish_reading(&mut self) { self.w.finish_reading(); }
-}
+impl<'a, W: WriteU8<'a>> WriteU8<'a> for AdapterU8<W> {
+    type WriteU8Done = <W as WriteU8<'a>>::WriteU8Done;
 
-#[async_trait_static::ritit]
-impl<W: WriteU8> WriteU8 for AdapterU8<W> {
-    #[inline(always)]
-    fn write_u8(&mut self, data: u8) -> impl Future<Output=()> {
+    fn write_u8(&'a mut self, data: u8) -> Self::WriteU8Done {
         self.w.write_u8(data)
     }
 }
 
-#[async_trait_static::ritit]
-impl<W: WriteU8> WriteBatch for AdapterU8<W> {
-    #[inline(always)]
-    fn write_u8_iter<I: Iterator<Item=u8>>(&mut self, iter: I)
-            -> impl Future<Output=()> {
-        async move {
-            for element in iter {
-                self.write_u8(element).await;
-            }
-        }
+impl<'a, W: 'a> WriteU8s<'a> for AdapterU8<W> where for<'w> W: WriteU8<'w> {
+    type WriteU8sDone = RepeatU8<'a, W>;
+
+    fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone {
+        RepeatU8{data: data, w: &mut self.w, current_write: None}
     }
-    #[inline(always)]
-    fn write_u16_iter<I: Iterator<Item=u16>>(&mut self, iter: I)
-            -> impl Future<Output=()> {
-        async move {
-            for element in iter {
-                // Big endien.
-                self.write_u8((element >> 8) as u8).await;
-                self.write_u8((element & 0xFF) as u8).await;
+}
+
+pub struct RepeatU8<'a, W: for<'w> WriteU8<'w>> {
+    data: &'a [u8],
+    // Lifetime is also 'a. `current_write` when not `None` can actually borrow
+    // `*w` in mut.
+    w: *mut W,
+    current_write: Option<<W as WriteU8<'a>>::WriteU8Done>,
+}
+
+impl<'a, W: 'a + for<'w> WriteU8<'w>> Future for RepeatU8<'a, W> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        // Safety: Only `Self::current_write` needs pinning. The implementation
+        // below indeed never moves it, only creates and drops.
+        let ru = unsafe {self.get_unchecked_mut()};
+        loop {
+            if ru.current_write.is_none() {
+                if let Some((first, remaining)) = ru.data.split_first() {
+                    // Safety: `current_write` is `None`.
+                    let w: &'a mut W = unsafe {&mut *ru.w};
+                    ru.current_write = Some(w.write_u8(*first));
+                    ru.data = remaining;
+                } else {
+                    return Poll::Ready(());
+                }
             }
+            if let Some(ref mut done) = &mut ru.current_write {
+                // Safety: Pinning a field of a pinned.
+                let done = unsafe {Pin::new_unchecked(done)};
+                if done.poll(cx).is_pending() {
+                    return Poll::Pending;
+                }
+            } else {
+                unsafe {core::hint::unreachable_unchecked()};
+            }
+            ru.current_write = None;
         }
     }
 }
 
 #[cfg(test)]
-pub mod testing {
-    use crate::testing_device::{DcU8, MockPlainIO, MockDevice, FakeDevice};
-    impl super::AdapterU8<MockDevice> {
-        pub fn new_for_mock() -> Self { Self::new(Default::default()) }
+mod adapter_u8_tests {
+    use mockall::Sequence;
+    use mockall::predicate::eq;
 
-        pub fn mock(&mut self) -> &mut MockPlainIO { self.w.mock() }
-
-        pub fn is_data_mode(&self) -> bool { self.w.is_data_mode() }
-
-        pub fn expect_standard_write_command(&mut self,
-                seq: &mut mockall::Sequence, command: u8, data: &[u8]) {
-            self.w.expect_standard_write_command(seq, command, data);
-        }
-    }
-    impl super::AdapterU8<FakeDevice> {
-        pub fn new_for_fake() -> Self { Self::new(Default::default()) }
-
-        pub fn seq(&self) -> std::vec::Vec<DcU8> { self.w.seq() }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use mockall::predicate;
-    use super::*;
-    use crate::spi::{DcxPin, WriteU8, write_u8s, write_u16s};
+    use crate::spi::ReadBits as _;
     use crate::testing_device::{block_on, MockDevice};
-
-    fn create_device() -> AdapterU8<MockDevice> {
-        AdapterU8::new_for_mock()
-    }
+    use super::*;
 
     #[test]
-    fn test_dcx_pin() {
-        let mut device = create_device();
-        device.set_dcx_command_mode();
-        assert!(!device.is_data_mode());
-        device.set_dcx_data_mode();
-        assert!(device.is_data_mode());
-    }
-
-    #[test]
-    fn test_write_u8_command() {
-        let mut device = create_device();
-        device.mock().expect_write_command()
-            .with(predicate::eq(0x35))
+    fn write_u8_as_is() {
+        let mut a = AdapterU8::new(MockDevice::new());
+        a.set_dcx_command_mode();
+        a.w.mock().expect_write_command()
+            .with(eq(0x34))
             .times(1);
-        device.set_dcx_command_mode();
-        block_on(device.write_u8(0x35));
+        block_on(a.write_u8(0x34));
     }
 
     #[test]
-    fn test_write_u8_data() {
-        let mut device = create_device();
-        device.mock().expect_write_data()
-            .with(predicate::eq(0x37))
-            .times(1);
-        device.set_dcx_data_mode();
-        block_on(device.write_u8(0x37));
-    }
-
-    #[test]
-    fn test_write_u8_iter() {
-        const COMMAND: u8 = 0x21;
-        const DATA: &[u8] = &[0x31, 0x41, 0x51];
-        let mut device = create_device();
+    fn write_u8s() {
+        let mut a = AdapterU8::new(MockDevice::new());
+        a.set_dcx_data_mode();
         let mut seq = mockall::Sequence::new();
-        device.mock().expect_write_command()
-            .with(predicate::eq(COMMAND))
+        a.w.mock().expect_write_data()
+            .with(eq(0x34))
             .times(1)
             .in_sequence(&mut seq);
-        for data in DATA {
-            device.mock().expect_write_data()
-                .with(predicate::eq(*data))
-                .times(1)
-                .in_sequence(&mut seq);
-        }
-        block_on(async {
-            device.set_dcx_command_mode();
-            device.write_u8(COMMAND).await;
-            device.set_dcx_data_mode();
-            write_u8s(&mut device, DATA).await;
-        });
-    }
-
-    #[test]
-    fn test_write_u16_iter() {
-        const COMMAND: u8 = 0x22;
-        const DATA_U16: &[u16] = &[0x3210, 0x6543, 0x9876];  // Big endian.
-        const DATA_U8: &[u8] = &[0x32, 0x10, 0x65, 0x43, 0x98, 0x76];
-        let mut device = create_device();
-        let mut seq = mockall::Sequence::new();
-        device.mock().expect_write_command()
-            .with(predicate::eq(COMMAND))
+        a.w.mock().expect_write_data()
+            .with(eq(0x56))
             .times(1)
             .in_sequence(&mut seq);
-        for data in DATA_U8 {
-            device.mock().expect_write_data()
-                .with(predicate::eq(*data))
+        a.w.mock().expect_write_data()
+            .with(eq(0x12))
+            .times(1)
+            .in_sequence(&mut seq);
+        block_on(a.write_u8s(&[0x34, 0x56, 0x12]));
+    }
+
+    #[test]
+    fn read_as_is() {
+        let src: u32 = 0b111010;
+        let src_len: usize = 6;
+
+        let mut a = AdapterU8::new(MockDevice::new());
+        let mut seq = Sequence::new();
+        a.w.mock().expect_start_reading().times(1).in_sequence(&mut seq);
+        for i in (0..src_len).rev() {
+            let bit = src >> i & 1 != 0;
+            a.w.mock().expect_read_bit()
                 .times(1)
-                .in_sequence(&mut seq);
+                .in_sequence(&mut seq)
+                .returning(move || bit);
         }
-        block_on(async {
-            device.set_dcx_command_mode();
-            device.write_u8(COMMAND).await;
-            device.set_dcx_data_mode();
-            write_u16s(&mut device, DATA_U16).await;
-        });
+        a.w.mock().expect_finish_reading().times(1).in_sequence(&mut seq);
+
+        let value = block_on(a.start_reading().read_bits(src_len));
+        assert_eq!(value, src);
+    }
+}  // mod adapter_u8_tests
+
+/// A helper to add [WriteU8] support when [WriteU8s] is implemented.
+///
+/// There is a slightly overhead on using an array to represent an element,
+/// especially when the compiler fails to inline the functions. The user
+/// should decide on their own whether they need to implement [WriteU8] and
+/// [WriteU8s] individually.
+pub struct AdapterU8s<W> { w: W, buf: u8 }
+
+impl<W> AdapterU8s<W> {
+    pub fn new(w: W) -> Self { Self{w, buf: 0} }
+}
+
+impl<W: DcxPin> DcxPin for AdapterU8s<W> {
+    fn set_dcx_command_mode(&mut self) { self.w.set_dcx_command_mode(); }
+    fn set_dcx_data_mode(&mut self) { self.w.set_dcx_data_mode(); }
+}
+
+impl<'a, W: Read<'a>> Read<'a> for AdapterU8s<W> {
+    type ReadBitsType = <W as Read<'a>>::ReadBitsType;
+
+    fn start_reading(&'a mut self) -> Self::ReadBitsType {
+        self.w.start_reading()
+    }
+}
+
+impl<'a, W: WriteU8s<'a>> WriteU8s<'a> for AdapterU8s<W> {
+    type WriteU8sDone = <W as WriteU8s<'a>>::WriteU8sDone;
+
+    fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone {
+        self.w.write_u8s(data)
+    }
+}
+
+impl<'a, W: WriteU8s<'a>> WriteU8<'a> for AdapterU8s<W> {
+    type WriteU8Done = <W as WriteU8s<'a>>::WriteU8sDone;
+
+    fn write_u8(&'a mut self, data: u8) -> Self::WriteU8Done {
+        self.buf = data;
+        self.w.write_u8s(core::slice::from_ref(&self.buf))
+    }
+}
+
+#[cfg(test)]
+mod adapter_u8s_tests {
+    use predicates::prelude::*;
+    use mockall::Sequence;
+    use std::{boxed::Box, format, vec::Vec};  // TODO: Remove after mockall 0.9.2+.
+
+    use crate::spi::ReadBits as _;
+    use crate::testing_device::{block_on, MockDevice};
+    use super::*;
+
+    #[mockall::automock]
+    trait BatchIO {
+        fn write(&mut self, data: &[u8]);
+    }
+
+    #[derive(Default)]
+    struct MockBatchDevice { mock: MockBatchIO }
+
+    impl<'a> WriteU8s<'a> for MockBatchDevice {
+        type WriteU8sDone = Pin<Box<dyn Future<Output=()> + 'a>>;
+
+        fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone {
+            Box::pin(async move { self.mock.write(data); })
+        }
+    }
+
+    fn create_batch_mock() -> AdapterU8s<MockBatchDevice> {
+        AdapterU8s::new(Default::default())
     }
 
     #[test]
-    fn test_write_u8_iter_with_standard_command_expectation() {
-        const COMMAND: u8 = 0x21;
-        const DATA: &[u8] = &[0x31, 0x41, 0x51];
-        let mut device = create_device();
-        let mut seq = mockall::Sequence::new();
-        device.expect_standard_write_command(&mut seq, COMMAND, DATA);
-        block_on(async {
-            device.set_dcx_command_mode();
-            device.write_u8(COMMAND).await;
-            device.set_dcx_data_mode();
-            write_u8s(&mut device, DATA).await;
+    fn write_u8s_as_is() {
+        let mut a = create_batch_mock();
+        let eq = predicate::function(|array| {
+            array == &[0x35, 0x46, 0x12, 0xFF]
         });
+        a.w.mock.expect_write()
+            .with(eq)
+            .times(1);
+        block_on(a.write_u8s(&[0x35, 0x46, 0x12, 0xFF]));
     }
 
     #[test]
-    fn test_fake() {
-        let mut device = AdapterU8::new_for_fake();
-        block_on(async {
-            device.set_dcx_command_mode();
-            device.write_u8(0x12).await;
-            device.set_dcx_data_mode();
-            write_u8s(&mut device, &[0x34]).await;
-            device.set_dcx_command_mode();
-            device.write_u8(0x56).await;
-            device.set_dcx_data_mode();
-            write_u16s(&mut device, &[0x789A]).await;
-        });
-        use crate::testing_device::DcU8::{Command as C, Data as D};
-        assert_eq!(device.seq(), std::vec![
-            C(0x12), D(0x34), C(0x56), D(0x78), D(0x9A),
-        ]);
+    fn write_u8() {
+        let mut a = create_batch_mock();
+        let eq = predicate::function(|array| { array == &[0x37] });
+        a.w.mock.expect_write()
+            .with(eq)
+            .times(1);
+        block_on(a.write_u8(0x37));
     }
 
-}  // mod tests
+    #[test]
+    fn dcx_modes() {
+        let mut a = AdapterU8::new(MockDevice::new());
+        let mut seq = Sequence::new();
+        a.w.mock().expect_write_data()
+            .with(predicate::eq(9))
+            .times(1)
+            .in_sequence(&mut seq);
+        a.w.mock().expect_write_command()
+            .with(predicate::eq(8))
+            .times(1)
+            .in_sequence(&mut seq);
+        a.w.mock().expect_write_data()
+            .with(predicate::eq(7))
+            .times(1)
+            .in_sequence(&mut seq);
+        a.w.mock().expect_write_command()
+            .with(predicate::eq(6))
+            .times(1)
+            .in_sequence(&mut seq);
+        a.set_dcx_data_mode();
+        block_on(a.write_u8(9));
+        a.set_dcx_command_mode();
+        block_on(a.write_u8(8));
+        a.set_dcx_data_mode();
+        block_on(a.write_u8(7));
+        a.set_dcx_command_mode();
+        block_on(a.write_u8(6));
+    }
+
+    #[test]
+    fn read_as_is() {
+        let src: u32 = 0b111010;
+        let src_len: usize = 6;
+
+        let mut a = AdapterU8::new(MockDevice::new());
+        let mut seq = Sequence::new();
+        a.w.mock().expect_start_reading().times(1).in_sequence(&mut seq);
+        for i in (0..src_len).rev() {
+            let bit = src >> i & 1 != 0;
+            a.w.mock().expect_read_bit()
+                .times(1)
+                .in_sequence(&mut seq)
+                .returning(move || bit);
+        }
+        a.w.mock().expect_finish_reading().times(1).in_sequence(&mut seq);
+
+        let value = block_on(a.start_reading().read_bits(src_len));
+        assert_eq!(value, src);
+    }
+}  // mod adapter_u8s_tests

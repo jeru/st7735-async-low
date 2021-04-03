@@ -2,12 +2,9 @@
 name = "stm32f3348_disco"
 version = "0.1.0"
 authors = ["Cheng Sheng <chengsheng@google.com>"]
-licence = "Apache-2.0"
 edition = "2018"
-description = "An example to use crate st7735-async-low."
 
 [dependencies]
-async-trait-static = "0.1.4"
 cortex-m = "*"
 nb= "*"
 panic-halt = "*"

@@ -27,16 +27,12 @@
 //! to implement the [spi] traits also need to explicitly enable these.
 
 #![no_std]
-#![feature(generic_associated_types)]
-#![feature(min_type_alias_impl_trait)]
 
-extern crate async_trait_static;
 #[cfg(test)] extern crate std;
 #[cfg(test)] extern crate tokio;
 #[cfg(test)] extern crate mockall;
 
-mod adapters;
-pub use adapters::AdapterU8;
+pub mod adapters;
 mod command_structs;
 pub use command_structs::{
     Colmod, ColorComponentOrder, ColumnOrder, Madctl, RowColumnSwap, RowOrder};

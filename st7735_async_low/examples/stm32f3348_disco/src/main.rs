@@ -14,10 +14,7 @@
 
 #![no_std]
 #![no_main]
-#![feature(generic_associated_types)]
-#![feature(min_type_alias_impl_trait)]
 
-extern crate async_trait_static;
 extern crate cortex_m;
 extern crate cortex_m_rt;
 extern crate nb;
@@ -29,7 +26,8 @@ mod spi;
 mod trivial_waker;
 
 use core::fmt::{Write as _};
-use st7735_async_low::{AdapterU8, Colmod, Commands};
+use st7735_async_low::{Colmod, Commands};
+use st7735_async_low::adapters::AdapterU8;
 use st7735_async_low::spi::WriteU8;
 
 

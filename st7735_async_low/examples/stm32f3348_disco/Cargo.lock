@@ -304,7 +304,6 @@ dependencies = [
 name = "stm32f3348_disco"
 version = "0.1.0"
 dependencies = [
- "async-trait-static",
  "cortex-m 0.7.2",
  "cortex-m-rt",
  "nb 1.0.0",

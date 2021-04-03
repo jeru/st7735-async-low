@@ -12,22 +12,23 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use core::future::Future;
-
-use super::command_structs::*;
-use super::spi::{DcxPin, Read, WriteU8, WriteBatch, write_u16s};
+use crate::command_structs::*;
+use crate::spi::{DcxPin, Read, ReadBits as _, WriteU8, WriteU8s};
 
 /// Commands of ST7735 in their original form, except that the parameters
 /// of each command are typed.
 pub struct Commands<S> { spi: S }
 
-impl<S: DcxPin + WriteU8 + WriteBatch> Commands<S> {
+impl<S: DcxPin> Commands<S> {
     /// Creates a new instance with an spi object.
     pub fn new(mut spi: S) -> Self {
         spi.set_dcx_command_mode();
         Self{spi}
     }
+}
 
+impl<S> Commands<S> where S: DcxPin,
+                          for<'a> S: WriteU8<'a> + WriteU8s<'a> {
     /// Sets the column address window as `begin` to `end`, both inclusive.
     #[inline(always)]
     pub async fn caset(&mut self, begin: u16, end: u16) {
@@ -78,7 +79,12 @@ impl<S: DcxPin + WriteU8 + WriteBatch> Commands<S> {
     /// Sets the scroll area address windows.
     #[inline(always)]
     pub async fn scrlar(&mut self, top: u16, visible: u16, bottom: u16) {
-        self.command_with_u16_slice(0x33, &[top, visible, bottom]).await;
+        let data = [
+            (top >> 8) as u8, (top & 0xFF) as u8,
+            (visible >> 8) as u8, (visible & 0xFF) as u8,
+            (bottom >> 8) as u8, (bottom & 0xFF) as u8,
+        ];
+        self.command_with_u8s(0x33, &data).await;
     }
 
     // Performance-critical enough to have its instantiated version.
@@ -86,20 +92,20 @@ impl<S: DcxPin + WriteU8 + WriteBatch> Commands<S> {
             &mut self, cmd: u8, first: u16, second: u16) {
         self.command(cmd).await;
         self.spi.set_dcx_data_mode();
-        write_u16s(&mut self.spi, &[first, second]).await;
+        let data = [(first >> 8) as u8, (first & 0xFF) as u8,
+                    (second >> 8) as u8, (second & 0xFF) as u8];
+        self.spi.write_u8s(&data).await;
         self.spi.set_dcx_command_mode();
     }
 
-    async fn command_with_u16_slice(
-            &mut self, cmd: u8, data: &[u16]) {
-        self.command(cmd).await;
+    #[inline(always)]
+    async fn command_with_u8s(&mut self, cmd: u8, data: &[u8]) {
+        self.spi.write_u8(cmd).await;
         self.spi.set_dcx_data_mode();
-        write_u16s(&mut self.spi, data).await;
+        self.spi.write_u8s(data).await;
         self.spi.set_dcx_command_mode();
     }
-}
 
-impl<S: DcxPin + WriteU8> Commands<S> {
     #[inline(always)]
     async fn command(&mut self, cmd: u8) {
         self.spi.write_u8(cmd).await;
@@ -173,42 +179,34 @@ impl<S: DcxPin + WriteU8> Commands<S> {
 /// A helper RAII object that can write data in u8 or u16 forms. It keeps
 /// borrowing. Dropping it makes the command that creates this instance
 /// end.
-pub struct RamWriter<'a, S: DcxPin> { spi: &'a mut S }
+pub struct RamWriter<'s, S: DcxPin> { spi: &'s mut S }
 
-impl<'a, S: DcxPin> Drop for RamWriter<'a, S> {
-    #[inline(always)]
+impl<'s, S: DcxPin> Drop for RamWriter<'s, S> {
     fn drop(&mut self) { self.spi.set_dcx_command_mode(); }
 }
 
-#[async_trait_static::ritit]
-impl<'a, S: DcxPin + WriteU8> WriteU8 for RamWriter<'a, S> {
-    #[inline(always)]
-    fn write_u8(&mut self, data: u8) -> impl Future<Output=()> {
+impl<'a, 's, S: DcxPin + WriteU8<'a>> WriteU8<'a> for RamWriter<'s, S> {
+    type WriteU8Done = <S as WriteU8<'a>>::WriteU8Done;
+
+    fn write_u8(&'a mut self, data: u8) -> Self::WriteU8Done {
         self.spi.write_u8(data)
     }
 }
 
-#[async_trait_static::ritit]
-impl<'a, S: DcxPin + WriteBatch> WriteBatch for RamWriter<'a, S> {
-    #[inline(always)]
-    fn write_u8_iter<I: Iterator<Item=u8>>(&mut self, iter: I)
-            -> impl Future<Output=()> {
-        self.spi.write_u8_iter(iter)
-    }
-    fn write_u16_iter<I: Iterator<Item=u16>>(&mut self, iter: I)
-            -> impl Future<Output=()> {
-        self.spi.write_u16_iter(iter)
+impl<'a, 's, S: DcxPin + WriteU8s<'a>> WriteU8s<'a> for RamWriter<'s, S> {
+    type WriteU8sDone = <S as WriteU8s<'a>>::WriteU8sDone;
+
+    fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone {
+        self.spi.write_u8s(data)
     }
 }
 
-impl<S: DcxPin + WriteU8 + Read> Commands<S> {
-    #[inline(always)]
+impl<S> Commands<S> where S: DcxPin,
+                          for<'a> S: WriteU8<'a> + Read<'a> {
     async fn read_command(&mut self, cmd: u8, num_bits: usize) -> u32 {
-        self.command(cmd).await;
-        self.spi.start_reading();
-        let r = self.spi.read(num_bits).await;
-        self.spi.finish_reading();
-        r
+        self.spi.write_u8(cmd).await;
+        let mut r = self.spi.start_reading();
+        r.read_bits(num_bits).await
     }
 
     // RD* (except RDDID and RDID*) skipped.
@@ -244,33 +242,25 @@ impl<S: DcxPin + WriteU8 + Read> Commands<S> {
 
 #[cfg(test)]
 mod tests {
-    use std::vec;
-    use std::vec::Vec;
-    use crate::AdapterU8;
-    use crate::spi::{write_u8s, write_u16s, WriteU8};
-    use crate::testing_device::{
-        block_on, DcU8, FakeDevice, MockDevice, MockPlainIO};
     use mockall::{predicate, Sequence};
-    use super::Commands;
 
-    impl Commands<AdapterU8<FakeDevice>> {
-        pub fn seq(&self) -> Vec<DcU8> { self.spi.seq() }
+    use crate::testing_device::{block_on, MockDevice, MockPlainIO};
+    use super::*;
+
+    macro_rules! test_simple_write_with_name {
+        ($name:tt, $fn:tt $args:tt, code: $code:expr, data: $data:expr) => {
+            #[test]
+            fn $name() {
+                let mut cmds = create_mock();
+                cmds.spi.expect_standard_write_command($code, $data);
+                block_on(cmds.$fn$args);
+            }
+        };
     }
-
-    fn create_fake() -> Commands<AdapterU8<FakeDevice>> {
-        Commands::new(AdapterU8::new_for_fake())
-    }
-
     macro_rules! test_simple_write {
         ($fn:tt $args:tt, code: $code:expr, data: $data:expr) => {
-            #[test]
-            fn $fn() {
-                let mut cmds = create_fake();
-                block_on(cmds.$fn$args);
-                let mut expected = vec![DcU8::Command($code)];
-                expected.extend($data.iter().map(|b| DcU8::Data(*b)));
-                assert_eq!(cmds.seq(), expected);
-            }
+            test_simple_write_with_name!(
+                $fn, $fn $args, code: $code, data: $data);
         };
     }
 
@@ -291,34 +281,28 @@ mod tests {
                        data: &[0x98, 0x76, 0x54, 0x32]);
     #[test]
     fn ramwr() {
-        let mut cmds = create_fake();
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(
+            0x2C, &[0x01, 0x23, 0x45, 0x67, 0x89, 0xAB, 0xCD]);
         block_on(async {
             let mut rw = cmds.ramwr().await;
             rw.write_u8(0x01).await;
-            write_u8s(&mut rw, &[0x23, 0x45]).await;
-            write_u8s(&mut rw, &[]).await;
-            write_u16s(&mut rw, &[0x6789, 0xABCD]).await;
-            write_u16s(&mut rw, &[]).await;
+            rw.write_u8s(&[0x23, 0x45]).await;
+            rw.write_u8s(&[]).await;
+            rw.write_u8s(&[0x67, 0x89, 0xAB, 0xCD]).await;
         });
-        use DcU8::Command as C;
-        use DcU8::Data as D;
-        assert_eq!(cmds.seq(), vec![
-            C(0x2C), D(0x01), D(0x23), D(0x45), D(0x67), D(0x89), D(0xAB),
-            D(0xCD),
-        ]);
     }
     #[test]
     fn rgbset() {
-        let mut cmds = create_fake();
-        let mut expected = std::vec![DcU8::Command(0x2D)];
-        expected.extend(&[DcU8::Data(0x35); 128]);
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(0x2D, &[0x35; 128]);
         block_on(async {
             let mut rw = cmds.rgbset().await;
             rw.write_u8(0x35).await;
-            write_u8s(&mut rw, &[0x35; 27]).await;
-            write_u16s(&mut rw, &[0x3535; 50]).await;
+            rw.write_u8s(&[0x35; 27]).await;
+            rw.write_u8s(&[0x35; 50]).await;
+            rw.write_u8s(&[0x35; 50]).await;
         });
-        assert_eq!(cmds.seq(), expected);
     }
     test_simple_write!(ptlar(0x1357, 0x2468), code: 0x30,
                        data: &[0x13, 0x57, 0x24, 0x68]);
@@ -327,15 +311,15 @@ mod tests {
     test_simple_write!(teoff(), code: 0x34, data: &[]);
     #[test]
     fn teon_mode0() {
-        let mut cmds = create_fake();
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(0x35, &[0x00]);
         block_on(cmds.teon(false));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x35), DcU8::Data(0x00)]);
     }
     #[test]
     fn teon_mode1() {
-        let mut cmds = create_fake();
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(0x35, &[0x01]);
         block_on(cmds.teon(true));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x35), DcU8::Data(0x01)]);
     }
     #[test]
     fn madctl_test0() {
@@ -349,9 +333,9 @@ mod tests {
             .set_horizontal_refresh_order(ColumnOrder::RightToLeft)
             .set_rgb_order(ColorComponentOrder::BlueGreenRed);
 
-        let mut cmds = create_fake();
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(0x36, &[0xC0]);
         block_on(cmds.madctl(mctl));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x36), DcU8::Data(0xC0)]);
     }
     #[test]
     fn madctl_test1() {
@@ -365,45 +349,30 @@ mod tests {
             .set_horizontal_refresh_order(ColumnOrder::LeftToRight)
             .set_rgb_order(ColorComponentOrder::RedGreenBlue);
 
-        let mut cmds = create_fake();
+        let mut cmds = create_mock();
+        cmds.spi.expect_standard_write_command(0x36, &[0x3C]);
         block_on(cmds.madctl(mctl));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x36), DcU8::Data(0x3C)]);
     }
     // VSCSAD skipped.
     test_simple_write!(idmoff(), code: 0x38, data: &[]);
     test_simple_write!(idmon(), code: 0x39, data: &[]);
-    #[test]
-    fn colmod_r4g4b4() {
-        use crate::command_structs::Colmod;
-        let mut cmds = create_fake();
-        block_on(cmds.colmod(Colmod::R4G4B4));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x3A), DcU8::Data(0b011)]);
-    }
-    #[test]
-    fn colmod_r5g6b5() {
-        use crate::command_structs::Colmod;
-        let mut cmds = create_fake();
-        block_on(cmds.colmod(Colmod::R5G6B5));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x3A), DcU8::Data(0b101)]);
-    }
-    #[test]
-    fn colmod_r6g6b6() {
-        use crate::command_structs::Colmod;
-        let mut cmds = create_fake();
-        block_on(cmds.colmod(Colmod::R6G6B6));
-        assert_eq!(cmds.seq(), vec![DcU8::Command(0x3A), DcU8::Data(0b110)]);
-    }
+    test_simple_write_with_name!(colmod_r4g4b4, colmod(Colmod::R4G4B4),
+                                 code: 0x3A, data: &[0b011]);
+    test_simple_write_with_name!(colmod_r5g6b5, colmod(Colmod::R5G6B5),
+                                 code: 0x3A, data: &[0b101]);
+    test_simple_write_with_name!(colmod_r6g6b6, colmod(Colmod::R6G6B6),
+                                 code: 0x3A, data: &[0b110]);
 
     // Panel functions skipped.
 
-    impl Commands<AdapterU8<MockDevice>> {
+    impl Commands<MockDevice> {
         fn mock(&mut self) -> &mut MockPlainIO {
             self.spi.mock()
         }
     }
 
-    fn create_mock() -> Commands<AdapterU8<MockDevice>> {
-        Commands::new(AdapterU8::new_for_mock())
+    fn create_mock() -> Commands<MockDevice> {
+        Commands::new(Default::default())
     }
 
     fn set_read_command_expectations(
