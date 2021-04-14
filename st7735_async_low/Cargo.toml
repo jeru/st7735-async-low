@@ -1,15 +1,16 @@
 [package]
 name = "st7735-async-low"
-version = "0.1.0"
+version = "0.0.1"
 authors = ["Cheng Sheng <chengsheng@google.com>"]
 license = "Apache-2.0"
 categories = ["asynchronous", "embedded", "no-std"]
 keywords = ["st7735", "lcd", "futures", "low", "api", "async", "await"]
 edition = "2018"
 description = "Low-level async library for 4-wire serial ST7735."
+homepage = "https://github.com/jeru/st7735-async-low"
+repository = "https://github.com/jeru/st7735-async-low"
 
 [dependencies]
-async-trait-static = "0.1.4"
 paste = "1.0"
 
 [dev-dependencies]
