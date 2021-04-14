@@ -12,15 +12,56 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Some traits needed to implement, in order to use [Commands](crate::Commands).
+//! Some traits needed to implement, in order to use [`Commands`].
+//!
+//! The minimum would be to implement [DcxPin] and one of [WriteU8] and
+//! [WriteU8s], then use an [`adapter`] to complete the missing
+//! one of [WriteU8] and [WriteU8s]. With these, the write parts of [`Commands`]
+//! are already usable.
+//!
+//! Note that the SPI protocol of ST7735's write commands
+//! are actually compatible with command SPI implementations of
+//! microcontrollers, eg., STM32 SPI with `CPOL=1` (clock idles at high) and
+//! `CPHA=1` (data sampled at the second edge) without an SS pin. An example
+//! can be found at [examples/stm32f3348_disco](https://github.com/jeru/st7735-async-low/tree/main/st7735_async_low/examples/stm32f3348_disco).
+//!
+//! If the user also needs to read data from the ST7735, then [Read] and
+//! [ReadBits] should also be implemented. Presumably **no** high performance is
+//! needed because reading is mostly for debugging purposes; the dummy bit
+//! when reading 24- or 32-bit data is quite annoying (not totally impossible
+//! to implement with hardware SPI but quite challenging); and when reading,
+//! the clock must toggles slower than when writing (so the user needs to
+//! reconfigure the SPI anyway). Therefore, it is
+//! recommended that the user simply implements [ReadBits::read_bits()] with
+//! bit-bangs.
+//!
+//! # Performance Consideration
+//!
+//! The reason to allow the user to implement [WriteU8] and [WriteU8s]
+//! separately is for better performance. While it is natural to think
+//! [WriteU8s] as a looped version of [WriteU8], there can be quite some
+//! latency and throughput differences. Eg., in a STM32 microcontroller,
+//! A loop-based [WriteU8s] is suboptimal for the following reasons:
+//! * As soon as a byte is started to be sent, the user can already write
+//!   the next byte to SPI's TX FIFO buffer. But [WriteU8::write_u8()] finishes
+//!   only after the previous byte is fully sent to the device.
+//! * DMA (direct memory access) is also very beneficial for [WriteU8s],
+//!   especially when sending many bytes.
+//!
+//! So the user should only use an [`AdapterU8`] if they doesn't care
+//! about the performance difference here.
+//!
+//! [`Commands`]: ../struct.Commands.html
+//! [`adapter`]: ../adapters/index.html
+//! [`AdapterU8`]: ../adapters/struct.AdapterU8.html
 
 use core::future::Future;
 
 /// Defines how the `DCX` pin operates.
-///
-/// According to the datasheet, `command` is LOW.
 pub trait DcxPin {
+    /// Toggles the DCX pin to the `command mode` (LOW value).
     fn set_dcx_command_mode(&mut self);
+    /// Toggles the DCX pin to the `data mode` (HIGH value).
     fn set_dcx_data_mode(&mut self);
 }
 
@@ -28,7 +69,9 @@ pub trait DcxPin {
 ///
 /// Common MCUs' SPI peripheral can be used, with
 /// CPOL=1, CPHA=1 and MSB-first. Notice the timing requirement from ST7735's
-/// datasheet.
+/// datasheet. Most important ones:
+/// * `SCK` low duration and high durations are at least 15ns long.
+/// * `SCK` period is at least 66ns long.
 pub trait WriteU8<'a> {
     type WriteU8Done : 'a + Future<Output=()>;
 
@@ -62,6 +105,10 @@ pub trait Read<'a> {
 
 /// Defines how the helper RAII variable returned by [Read::start_reading()]
 /// should behave.
+///
+/// Notice the timing requirement from ST7735's datasheet. Most important ones:
+/// * `SCK` low duration and high durations are at least 60ns long.
+/// * `SCK` period is at least 150ns long.
 pub trait ReadBits<'a> {
     type ReadBitsDone : 'a + Future<Output=u32>;
 

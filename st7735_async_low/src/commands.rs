@@ -17,6 +17,7 @@ use crate::spi::{DcxPin, Read, ReadBits as _, WriteU8, WriteU8s};
 
 /// Commands of ST7735 in their original form, except that the parameters
 /// of each command are typed.
+#[derive(Debug)]
 pub struct Commands<S> { spi: S }
 
 impl<S: DcxPin> Commands<S> {
@@ -176,9 +177,8 @@ impl<S> Commands<S> where S: DcxPin,
     // Panel functions skipped.
 }
 
-/// A helper RAII object that can write data in u8 or u16 forms. It keeps
-/// borrowing. Dropping it makes the command that creates this instance
-/// end.
+/// A helper RAII object for writing *data* after a *command*.
+#[derive(Debug)]
 pub struct RamWriter<'s, S: DcxPin> { spi: &'s mut S }
 
 impl<'s, S: DcxPin> Drop for RamWriter<'s, S> {

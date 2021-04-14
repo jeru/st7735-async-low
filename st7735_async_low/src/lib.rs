@@ -17,14 +17,8 @@
 //!
 //! A user of this crate should implement the write traits in [crate::spi], then
 //! wrap it with [Commands](crate::Commands) to use the commands. An example can
-//! be found at the `examples/stm32f3348_disco` directory of the crate.
-//!
-//! WARNING: The crate uses two unstable features
-//! [generic_associated_types](https://doc.rust-lang.org/nightly/unstable-book/language-features/generic-associated-types.html)
-//! and
-//! [min_type_alias_impl_trait](https://doc.rust-lang.org/nightly/unstable-book/language-features/min-type-alias-impl-trait.html),
-//! which unfortunately cannot be totally hidden into the crate itself: the user
-//! to implement the [spi] traits also need to explicitly enable these.
+//! be found at the [examples/stm32f3348_disco](https://github.com/jeru/st7735-async-low/tree/main/st7735_async_low/examples/stm32f3348_disco)
+//! directory of the crate.
 
 #![no_std]
 

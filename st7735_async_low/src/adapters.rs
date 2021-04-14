@@ -12,6 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! Helper structs make both [WriteU8] and [WriteU8s] available when only one
+//! is implemented.
+
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -54,10 +57,11 @@ impl<'a, W: 'a> WriteU8s<'a> for AdapterU8<W> where for<'w> W: WriteU8<'w> {
     type WriteU8sDone = RepeatU8<'a, W>;
 
     fn write_u8s(&'a mut self, data: &'a [u8]) -> Self::WriteU8sDone {
-        RepeatU8{data: data, w: &mut self.w, current_write: None}
+        RepeatU8{data, w: &mut self.w, current_write: None}
     }
 }
 
+/// Internal details of [AdapterU8].
 pub struct RepeatU8<'a, W: for<'w> WriteU8<'w>> {
     data: &'a [u8],
     // Lifetime is also 'a. `current_write` when not `None` can actually borrow

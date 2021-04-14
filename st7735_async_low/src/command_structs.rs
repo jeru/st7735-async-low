@@ -80,7 +80,7 @@ macro_rules! bit_field {
 /// assert_eq!(mctl.row_column_swap(), RowColumnSwap::Swapped);
 /// // Can invoke `Commands::madctl(mctl)` to send it to the LCD.
 /// ```
-#[derive(Clone, Copy, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct Madctl {
     data: u8,
 }
@@ -94,6 +94,12 @@ impl Madctl {
 }
 impl From<Madctl> for u8 {
     fn from(mctl: Madctl) -> u8 { mctl.data }
+}
+impl ::core::fmt::Display for Madctl {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter)
+            -> ::core::fmt::Result {
+        <Self as core::fmt::Debug>::fmt(self, f)
+    }
 }
 
 define_pub_bit_type!(RowOrder, zero: TopToBottom, one: BottomToTop,
@@ -113,7 +119,7 @@ define_pub_bit_type!(ColorComponentOrder, zero: RedGreenBlue, one: BlueGreenRed,
 /// is used, the LCD will internally translate each component into the 6-bit
 /// format with a lookup table. See Sec 9.18 "Color Depth Conversion Look Up
 /// Tables" of the ST7735S datasheet for the lookup table (LUT).
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum Colmod {
     /// Each component has 4 bits. LUT will be used.
     R4G4B4 = 0b011,
@@ -143,5 +149,11 @@ impl From<u8> for Colmod {
             R6G6B6_VALUE => R6G6B6,
             _ => Unknown,
         }
+    }
+}
+impl ::core::fmt::Display for Colmod {
+    fn fmt(&self, f: &mut ::core::fmt::Formatter)
+            -> ::core::fmt::Result {
+        <Self as core::fmt::Debug>::fmt(self, f)
     }
 }
